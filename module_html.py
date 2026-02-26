@@ -122,7 +122,7 @@ def get_full_page_html(tabs_data):
             <div class="navbar-menu">
                 <span class="navbar-item">实时行情</span>
                 <button id="toggle-chat-btn" class="navbar-item" style="background: none; border: none; cursor: pointer; color: #fff; font-weight: 700; font-size: 0.9rem; text-transform: uppercase; letter-spacing: 0.05em; padding: 0 15px;" onclick="toggleChatSidebar()">
-                    <span id="chat-toggle-icon">◀</span> AI助手
+                    <span id="chat-toggle-icon">▶</span> AI助手
                 </button>
             </div>
         </nav>
@@ -137,7 +137,7 @@ def get_full_page_html(tabs_data):
                 </div>
             </div>
             
-            <div class="pro-chat-sidebar" id="chat-sidebar">
+            <div class="pro-chat-sidebar hidden" id="chat-sidebar">
                 <div class="resize-handle" id="resize-handle"></div>
                 <div id="pro-chat-root" style="height: 100%; width: 100%;"></div>
             </div>

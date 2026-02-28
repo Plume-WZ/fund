@@ -2,10 +2,12 @@
 
 import argparse
 import datetime
+import getpass
 import json
 import os
 import random
 import re
+import sys
 import threading
 import time
 
@@ -14,11 +16,10 @@ import urllib3
 from curl_cffi import requests as curl_requests
 from dotenv import load_dotenv
 from loguru import logger
-from lxml import etree
 from tabulate import tabulate
 
-from ai_analyzer import AIAnalyzer
-from module_html import get_table_html
+from src.ai_analyzer import AIAnalyzer
+from src.module_html import get_table_html
 
 # 加载环境变量
 load_dotenv()
@@ -44,40 +45,139 @@ def format_table_msg(table, tablefmt="pretty"):
     return tabulate(table, tablefmt=tablefmt, missingval="N/A")
 
 
-class MaYiFund:
+class ClientConfig:
+    """客户端服务器配置管理"""
+
+    CONFIG_FILE = "cache/user_account.json"
+
+    @classmethod
+    def is_initialized(cls):
+        """检查是否已初始化"""
+        return os.path.exists(cls.CONFIG_FILE)
+
+    @classmethod
+    def load_config(cls):
+        """加载配置"""
+        if not os.path.exists(cls.CONFIG_FILE):
+            return None
+        try:
+            with open(cls.CONFIG_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"加载配置文件失败: {e}")
+            return None
+
+    @classmethod
+    def save_config(cls, server_url, username, password):
+        """保存配置"""
+        try:
+            config = {
+                'server_url': server_url.rstrip('/'),
+                'username': username,
+                'password': password,
+                'last_sync': None
+            }
+            os.makedirs("cache", exist_ok=True)
+            with open(cls.CONFIG_FILE, 'w', encoding='utf-8') as f:
+                json.dump(config, f, ensure_ascii=False, indent=4)
+            logger.info(f"配置已保存到 {cls.CONFIG_FILE}")
+            return True
+        except Exception as e:
+            logger.error(f"保存配置失败: {e}")
+            return False
+
+    @classmethod
+    def verify_server_connection(cls, server_url, username, password):
+        """验证服务器连接"""
+        try:
+            response = requests.post(
+                f"{server_url}/api/client/fund/config",
+                json={'username': username, 'password': password, 'action': 'get'},
+                timeout=10
+            )
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('success'):
+                    logger.info("服务器连接验证成功")
+                    return True
+                else:
+                    logger.error(f"认证失败: {data.get('message')}")
+            else:
+                logger.error(f"服务器返回错误: {response.status_code}")
+        except requests.exceptions.ConnectionError:
+            logger.error("无法连接到服务器，请检查地址和网络")
+        except requests.exceptions.Timeout:
+            logger.error("连接超时")
+        except Exception as e:
+            logger.error(f"连接验证失败: {e}")
+        return False
+
+    @classmethod
+    def init_interactive(cls):
+        """交互式初始化配置"""
+        logger.info("=== 初始化服务器连接配置 ===")
+        server_url = input(f"请输入服务器地址 (默认: http://localhost:8311): ").strip()
+        if not server_url:
+            server_url = "http://localhost:8311"
+        server_url = server_url.rstrip("/")
+        username = input("请输入用户名: ").strip()
+        if not username:
+            logger.error("用户名不能为空")
+            return False
+
+        password = getpass.getpass("请输入密码: ")
+        if not password:
+            logger.error("密码不能为空")
+            return False
+
+        logger.info("正在验证服务器连接...")
+        if not cls.verify_server_connection(server_url, username, password):
+            logger.error("服务器连接验证失败，请检查配置")
+            return False
+
+        logger.info("连接验证成功，正在保存配置...")
+        if cls.save_config(server_url, username, password):
+            logger.info("配置初始化完成！")
+            return True
+        return False
+
+
+class LanFund:
     CACHE_MAP = {}
 
-    # 板块分类映射
     MAJOR_CATEGORIES = {
         "科技": ["人工智能", "半导体", "云计算", "5G", "光模块", "CPO", "F5G", "通信设备", "PCB", "消费电子",
-                "计算机", "软件开发", "信创", "网络安全", "IT服务", "国产软件", "计算机设备", "光通信",
-                "算力", "脑机接口", "通信", "电子", "光学光电子", "元件", "存储芯片", "第三代半导体",
-                "光刻胶", "电子化学品", "LED", "毫米波", "智能穿戴", "东数西算", "数据要素", "国资云",
-                "Web3.0", "AIGC", "AI应用", "AI手机", "AI眼镜", "DeepSeek", "TMT", "科技"],
+                 "计算机", "软件开发", "信创", "网络安全", "IT服务", "国产软件", "计算机设备", "光通信",
+                 "算力", "脑机接口", "通信", "电子", "光学光电子", "元件", "存储芯片", "第三代半导体",
+                 "光刻胶", "电子化学品", "LED", "毫米波", "智能穿戴", "东数西算", "数据要素", "国资云",
+                 "Web3.0", "AIGC", "AI应用", "AI手机", "AI眼镜", "DeepSeek", "TMT", "科技"],
         "医药健康": ["医药生物", "医疗器械", "生物疫苗", "CRO", "创新药", "精准医疗", "医疗服务", "中药",
-                    "化学制药", "生物制品", "基因测序", "超级真菌"],
+                     "化学制药", "生物制品", "基因测序", "超级真菌"],
         "消费": ["食品饮料", "白酒", "家用电器", "纺织服饰", "商贸零售", "新零售", "家居用品", "文娱用品",
-                "婴童", "养老产业", "体育", "教育", "在线教育", "社会服务", "轻工制造", "新消费",
-                "可选消费", "消费", "家电零部件", "智能家居"],
+                 "婴童", "养老产业", "体育", "教育", "在线教育", "社会服务", "轻工制造", "新消费",
+                 "可选消费", "消费", "家电零部件", "智能家居"],
         "金融": ["银行", "证券", "保险", "非银金融", "国有大型银行", "股份制银行", "城商行", "金融"],
         "能源": ["新能源", "煤炭", "石油石化", "电力", "绿色电力", "氢能源", "储能", "锂电池", "电池",
-                "光伏设备", "风电设备", "充电桩", "固态电池", "能源", "煤炭开采", "公用事业", "锂矿"],
+                 "光伏设备", "风电设备", "充电桩", "固态电池", "能源", "煤炭开采", "公用事业", "锂矿"],
         "工业制造": ["机械设备", "汽车", "新能源车", "工程机械", "高端装备", "电力设备", "专用设备",
-                    "通用设备", "自动化设备", "机器人", "人形机器人", "汽车零部件", "汽车服务",
-                    "汽车热管理", "尾气治理", "特斯拉", "无人驾驶", "智能驾驶", "电网设备", "电机",
-                    "高端制造", "工业4.0", "工业互联", "低空经济", "通用航空"],
+                     "通用设备", "自动化设备", "机器人", "人形机器人", "汽车零部件", "汽车服务",
+                     "汽车热管理", "尾气治理", "特斯拉", "无人驾驶", "智能驾驶", "电网设备", "电机",
+                     "高端制造", "工业4.0", "工业互联", "低空经济", "通用航空"],
         "材料": ["有色金属", "黄金股", "贵金属", "基础化工", "钢铁", "建筑材料", "稀土永磁", "小金属",
-                "工业金属", "材料", "大宗商品", "资源"],
+                 "工业金属", "材料", "大宗商品", "资源"],
         "军工": ["国防军工", "航天装备", "航空装备", "航海装备", "军工电子", "军民融合", "商业航天",
-                "卫星互联网", "航母", "航空机场"],
+                 "卫星互联网", "航母", "航空机场"],
         "基建地产": ["建筑装饰", "房地产", "房地产开发", "房地产服务", "交通运输", "物流"],
         "环保": ["环保", "环保设备", "环境治理", "垃圾分类", "碳中和", "可控核聚变", "液冷"],
         "传媒": ["传媒", "游戏", "影视", "元宇宙", "超清视频", "数字孪生"],
         "主题": ["国企改革", "一带一路", "中特估", "中字头", "并购重组", "华为", "新兴产业",
-                "国家安防", "安全主题", "农牧主题", "农林牧渔", "养殖业", "猪肉", "高端装备"]
+                 "国家安防", "安全主题", "农牧主题", "农林牧渔", "养殖业", "猪肉", "高端装备"]
     }
 
-    def __init__(self):
+    def __init__(self, user_id=None, db=None):
+        self.user_id = user_id  # 用户ID，如果为None则使用文件模式
+        self.db = db  # 数据库实例，从外部传入
+
         self.session = requests.Session()
         self.baidu_session = curl_requests.Session(impersonate="chrome")
         self.baidu_session.headers = {
@@ -102,17 +202,112 @@ class MaYiFund:
         self.result = []
 
     def load_cache(self):
-        if not os.path.exists("cache"):
-            os.mkdir("cache")
-        if os.path.exists("cache/fund_map.json"):
-            with open("cache/fund_map.json", "r", encoding="utf-8") as f:
-                self.CACHE_MAP = json.load(f)
-        # if self.CACHE_MAP:
-        #     logger.debug(f"加载 {len(self.CACHE_MAP)} 个基金代码缓存成功")
+        """加载缓存数据，优先从服务器获取，否则从本地加载"""
+        if ClientConfig.is_initialized():
+            logger.info("检测到服务器配置，正在从服务器获取数据...")
+            fund_map = self._load_from_server()
+            if fund_map is not None:
+                self.CACHE_MAP = fund_map
+                logger.info(f"从服务器加载了 {len(self.CACHE_MAP)} 个基金代码")
+                with open("cache/fund_map.json", "w", encoding="utf-8") as f:
+                    json.dump(self.CACHE_MAP, f, ensure_ascii=False, indent=4)
+                return
+            else:
+                logger.warning("从服务器加载失败，尝试本地加载")
+
+        if self.user_id is not None and self.db is not None:
+            self.CACHE_MAP = self.db.get_user_funds(self.user_id)
+        else:
+            if not os.path.exists("cache"):
+                os.mkdir("cache")
+            if os.path.exists("cache/fund_map.json"):
+                with open("cache/fund_map.json", "r", encoding="utf-8") as f:
+                    self.CACHE_MAP = json.load(f)
 
     def save_cache(self):
-        with open("cache/fund_map.json", "w", encoding="utf-8") as f:
-            json.dump(self.CACHE_MAP, f, ensure_ascii=False, indent=4)
+        """保存缓存数据，优先同步到服务器"""
+        if ClientConfig.is_initialized():
+            if self._save_to_server():
+                logger.info("配置已同步到服务器")
+                return
+            else:
+                logger.warning("同步到服务器失败，尝试本地保存")
+
+        if self.user_id is not None and self.db is not None:
+            self.db.save_user_funds(self.user_id, self.CACHE_MAP)
+        else:
+            with open("cache/fund_map.json", "w", encoding="utf-8") as f:
+                json.dump(self.CACHE_MAP, f, ensure_ascii=False, indent=4)
+
+    def _load_from_server(self):
+        """从服务器加载配置"""
+        config = ClientConfig.load_config()
+        if not config:
+            return None
+
+        try:
+            response = requests.post(
+                f"{config['server_url']}/api/client/fund/config",
+                json={
+                    'username': config['username'],
+                    'password': config['password'],
+                    'action': 'get'
+                },
+                timeout=10
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('success'):
+                    fund_map = data.get('fund_map')
+                    config['last_sync'] = datetime.datetime.now().isoformat()
+                    with open(ClientConfig.CONFIG_FILE, 'w', encoding='utf-8') as f:
+                        json.dump(config, f, ensure_ascii=False, indent=4)
+                    return fund_map
+                else:
+                    logger.error(f"获取配置失败: {data.get('message')}")
+            else:
+                logger.error(f"服务器返回错误: {response.status_code}")
+
+        except Exception as e:
+            logger.error(f"从服务器加载配置失败: {e}")
+
+        return None
+
+    def _save_to_server(self):
+        """保存配置到服务器"""
+        config = ClientConfig.load_config()
+        if not config:
+            return False
+
+        try:
+            response = requests.post(
+                f"{config['server_url']}/api/client/fund/config",
+                json={
+                    'username': config['username'],
+                    'password': config['password'],
+                    'action': 'push',
+                    'fund_map': self.CACHE_MAP
+                },
+                timeout=10
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('success'):
+                    config['last_sync'] = datetime.datetime.now().isoformat()
+                    with open(ClientConfig.CONFIG_FILE, 'w', encoding='utf-8') as f:
+                        json.dump(config, f, ensure_ascii=False, indent=4)
+                    return True
+                else:
+                    logger.error(f"同步失败: {data.get('message')}")
+            else:
+                logger.error(f"服务器返回错误: {response.status_code}")
+
+        except Exception as e:
+            logger.error(f"同步到服务器失败: {e}")
+
+        return False
 
     def init(self):
         res = self.session.get("https://www.fund123.cn/fund", headers={
@@ -128,10 +323,6 @@ class MaYiFund:
             "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
             "referer": "https://gushitong.baidu.com/"
         }, timeout=10, verify=False)
-        # self.baidu_session.cookies.update({
-        #     "BDUSS": "3hJYkhPNEM3Z2xOeH5TLVU4OEhhU1hPUFYxdVV3V0pkd1VEMEhCTEgxRENMWEJsSVFBQUFBJCQAAAAAAAAAAAEAAAAVl0lPamRrZGpiZGIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMKgSGXCoEhlM",
-        #     "BDUSS_BFESS": "3hJYkhPNEM3Z2xOeH5TLVU4OEhhU1hPUFYxdVV3V0pkd1VEMEhCTEgxRENMWEJsSVFBQUFBJCQAAAAAAAAAAAEAAAAVl0lPamRrZGpiZGIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMKgSGXCoEhlM",
-        # })
 
     def add_code(self, codes):
         codes = codes.split(",")
@@ -162,7 +353,8 @@ class MaYiFund:
                     self.CACHE_MAP[code] = {
                         "fund_key": fund_key,
                         "fund_name": fund_name,
-                        "is_hold": False
+                        "is_hold": False,
+                        "shares": 0
                     }
                     logger.info(f"添加基金代码【{code}】成功")
                 else:
@@ -194,13 +386,11 @@ class MaYiFund:
         codes = codes.split(",")
         codes = [code.strip() for code in codes if code.strip()]
 
-        # 构建板块序号到名称的映射
         all_sectors = []
         for category, sectors in self.MAJOR_CATEGORIES.items():
             for sector in sectors:
                 all_sectors.append(sector)
 
-        # 表格形式展示板块分类
         logger.info("板块分类列表:")
         results = []
         for i in range(0, len(all_sectors), 5):
@@ -216,7 +406,6 @@ class MaYiFund:
                     logger.warning(f"标记板块【{code}】失败: 不存在该基金代码, 请先添加该基金代码")
                     continue
 
-                # 选择板块
                 logger.info(f"为基金 【{code} {self.CACHE_MAP[code]['fund_name']}】 选择板块:")
                 logger.info("请输入板块序号或自定义板块名称 (多个用逗号分隔, 如: 1,3,5 或 新能源,医药 或 1,新能源):")
                 sector_input = input().strip()
@@ -225,17 +414,13 @@ class MaYiFund:
                     sector_items = [s.strip() for s in sector_input.split(",")]
                     selected_sectors = []
                     for item in sector_items:
-                        # 尝试解析为序号
                         try:
                             idx = int(item)
                             if 1 <= idx <= len(all_sectors):
-                                # 是有效序号，从板块列表中获取
                                 selected_sectors.append(all_sectors[idx - 1])
                             else:
-                                # 序号超出范围，当作自定义板块名称
                                 selected_sectors.append(item)
                         except ValueError:
-                            # 不是数字，直接作为自定义板块名称
                             selected_sectors.append(item)
 
                     if selected_sectors:
@@ -252,9 +437,37 @@ class MaYiFund:
                 logger.error(f"标记板块【{code}】失败: {e}")
         self.save_cache()
 
+    def mark_fund_sector_web(self, codes, sectors):
+        """标记基金板块（Web API使用）
+
+        Args:
+            codes: list of str, 基金代码列表
+            sectors: list of str, 板块名称列表
+        """
+        for code in codes:
+            if code in self.CACHE_MAP:
+                self.CACHE_MAP[code]["sectors"] = sectors
+                logger.info(f"✓ 已为基金 {code} 绑定板块: {', '.join(sectors)}")
+            else:
+                logger.warning(f"基金代码 {code} 不存在")
+        self.save_cache()
+
+    def unmark_fund_sector_web(self, codes):
+        """删除基金板块标记（Web API使用）
+
+        Args:
+            codes: list of str, 基金代码列表
+        """
+        for code in codes:
+            if code in self.CACHE_MAP:
+                self.CACHE_MAP[code]["sectors"] = []
+                logger.info(f"✓ 已删除基金 {code} 的板块标记")
+            else:
+                logger.warning(f"基金代码 {code} 不存在")
+        self.save_cache()
+
     def unmark_fund_sector(self):
         """删除基金板块标记（独立功能）"""
-        # 找出所有有板块标记的基金
         marked_codes = [code for code, data in self.CACHE_MAP.items() if data.get("sectors", [])]
         if not marked_codes:
             logger.warning("暂无板块标记的基金代码")
@@ -280,7 +493,6 @@ class MaYiFund:
                 logger.error(f"删除板块标记【{code}】失败: {e}")
         self.save_cache()
 
-
     def search_one_code(self, fund, fund_data, is_return):
         with sem:
             try:
@@ -299,13 +511,12 @@ class MaYiFund:
                 }
                 url = f"https://www.fund123.cn/matiaria?fundCode={fund}"
                 response = self.session.get(url, headers=headers, timeout=10, verify=False)
-                dayOfGrowth = re.findall('\"dayOfGrowth\"\:\"(.*?)\"', response.text)[0]
+                dayOfGrowth = re.findall(r'"dayOfGrowth":"(.*?)"', response.text)[0]
                 dayOfGrowth = str(round(float(dayOfGrowth), 2)) + "%"
 
-                netValueDate = re.findall('\"netValueDate\"\:\"(.*?)\"', response.text)[0]
-                if is_return:
-                    dayOfGrowth = f"{dayOfGrowth}({netValueDate})"
-
+                netValue = re.findall(r'"netValue":"(.*?)"', response.text)[0]
+                netValueDate = re.findall(r'"netValueDate":"(.*?)"', response.text)[0]
+                netValue = netValue + f"({netValueDate})"
                 url = "https://www.fund123.cn/api/fund/queryFundQuotationCurves"
                 params = {
                     "_csrf": self._csrf
@@ -362,15 +573,13 @@ class MaYiFund:
                         consecutive_count = "\033[1;32m" + str(-consecutive_count)
                         consecutive_growth = "\033[1;32m" + str(consecutive_growth)
                     else:
-                        consecutive_count = str(-consecutive_count)
-                        consecutive_growth = str(consecutive_growth)
+                        consecutive_count = str(consecutive_count)
                 else:
                     if not is_return:
                         consecutive_count = "\033[1;31m" + str(consecutive_count)
                         consecutive_growth = "\033[1;31m" + str(consecutive_growth)
                     else:
                         consecutive_count = str(consecutive_count)
-                        consecutive_growth = str(consecutive_growth)
 
                 url = "https://www.fund123.cn/api/fund/queryFundEstimateIntraday"
                 params = {
@@ -394,7 +603,7 @@ class MaYiFund:
                     else:
                         fund_info = response.json()["list"][-1]
                         now_time = datetime.datetime.fromtimestamp(fund_info["time"] / 1000).strftime(
-                            "%H:%M:%S"
+                            "%H:%M"
                         )
                         forecastGrowth = str(round(float(fund_info["forecastGrowth"]) * 100, 2)) + "%"
                         if not is_return:
@@ -407,27 +616,105 @@ class MaYiFund:
                             dayOfGrowth = "\033[1;32m" + dayOfGrowth
                         else:
                             dayOfGrowth = "\033[1;31m" + dayOfGrowth
-                    if not is_return:
-                        # 处理持有标记
-                        if self.CACHE_MAP[fund].get("is_hold", False):
-                            fund_name = "⭐ " + fund_name
-                        # 处理板块标记（独立于持有状态）
-                        sectors = self.CACHE_MAP[fund].get("sectors", [])
-                        if sectors:
-                            sector_str = ",".join(sectors)
-                            fund_name = f"({sector_str}) {fund_name}"
-                    # 合并连涨天数和连涨幅
+                    if self.CACHE_MAP[fund].get("is_hold", False):
+                        fund_name = "⭐ " + fund_name
+                    sectors = self.CACHE_MAP[fund].get("sectors", [])
+                    if sectors:
+                        sector_display = ", ".join(sectors)
+                        if is_return:
+                            fund_name = f"{fund_name} <span style='color: #8b949e; font-size: 12px;'>ð·️ {sector_display}</span>"
+                        else:
+                            fund_name = f"({sector_display}) {fund_name}"
                     consecutive_info = f"{consecutive_count}天 {consecutive_growth}"
-                    # 合并近30天涨跌和总涨幅
                     monthly_info = f"{montly_growth_day}/{montly_growth_day_count} {montly_growth_rate}"
-
                     self.result.append([
-                        fund, fund_name, now_time, forecastGrowth, dayOfGrowth, consecutive_info, monthly_info
+                        fund, fund_name, now_time, netValue, forecastGrowth, dayOfGrowth, consecutive_info, monthly_info
                     ])
                 else:
                     logger.error(f"查询基金代码【{fund}】失败: {response.text.strip()}")
             except Exception as e:
                 logger.error(f"查询基金代码【{fund}】失败: {e}")
+
+    def get_fund_today_data(self, fund, fund_data):
+        fund_key = fund_data["fund_key"]
+        fund_name = fund_data["fund_name"]
+
+        headers = {
+            "Accept-Language": "zh-CN,zh;q=0.9",
+            "Connection": "keep-alive",
+            "Content-Type": "application/json",
+            "Origin": "https://www.fund123.cn",
+            "Referer": "https://www.fund123.cn/fund",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
+            "X-API-Key": "foobar",
+            "accept": "json"
+        }
+
+        url = "https://www.fund123.cn/api/fund/queryFundEstimateIntraday"
+        params = {
+            "_csrf": self._csrf
+        }
+        today = datetime.datetime.now().strftime("%Y-%m-%d")
+        tomorrow = (datetime.datetime.now() + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+        data = {
+            "startTime": today,
+            "endTime": tomorrow,
+            "limit": 200,
+            "productId": fund_key,
+            "format": True,
+            "source": "WEALTHBFFWEB"
+        }
+        response = self.session.post(url, headers=headers, params=params, json=data, timeout=10, verify=False)
+        if response.json()["success"]:
+            if not response.json()["list"]:
+                return []
+            else:
+                results = []
+                for fund_info in response.json()["list"]:
+                    now_time = datetime.datetime.fromtimestamp(fund_info["time"] / 1000).strftime(
+                        "%H:%M"
+                    )
+                    forecastGrowth = str(round(float(fund_info["forecastGrowth"]) * 100, 2)) + "%"
+                    forecastNetValue = str(round(float(fund_info["forecastNetValue"]), 4))
+                    results.append({
+                        "fund_name": fund_name,
+                        "fund_code": fund,
+                        "now_time": now_time,
+                        "forecastGrowth": forecastGrowth,
+                        "forecastNetValue": forecastNetValue
+                    })
+                return results
+        else:
+            logger.error(f"查询基金代码【{fund}】失败: {response.text.strip()}")
+        return []
+
+    def get_fund_chart_data(self, fund_code, fund_data):
+        """获取基金估值趋势图数据
+
+        Args:
+            fund_code: 基金代码
+            fund_data: 基金数据字典，包含fund_key和fund_name
+
+        Returns:
+            dict: {
+                'labels': ['09:30', '09:45', ...],  # 时间标签
+                'growth': [1.2, 1.5, ...],           # 涨幅数值
+                'net_values': [1.2345, 1.2360, ...] # 净值数值
+            }
+        """
+        raw_data = self.get_fund_today_data(fund_code, fund_data)
+        if not raw_data:
+            return {
+                'labels': [],
+                'growth': [],
+                'net_values': []
+            }
+
+        return {
+            'labels': [point['now_time'] for point in raw_data],
+            'growth': [float(point['forecastGrowth'].replace('%', '')) for point in raw_data],
+            'net_values': [float(point['forecastNetValue']) for point in raw_data]
+        }
 
     def search_code(self, is_return=False):
         self.result = []
@@ -444,33 +731,241 @@ class MaYiFund:
         if is_return:
             self.result = sorted(
                 self.result,
-                key=lambda x: float(x[3].replace("%", "")) if x[3] != "N/A" else -99,
+                key=lambda x: float(x[4].replace("%", "")) if x[4] != "N/A" else -99,
                 reverse=True
             )
             return self.result
+
         if self.result:
             self.result = sorted(
                 self.result,
-                key=lambda x: float(x[3].split("m")[1].replace("%", "")) if x[3] != "N/A" else -99,
+                key=lambda x: float(x[4].split("m")[1].replace("%", "")) if x[4] != "N/A" else -99,
                 reverse=True
             )
+
+            position_summary = self.calculate_position_summary()
+            if position_summary:
+                logger.critical(f"{time.strftime('%Y-%m-%d %H:%M')} 收益统计:")
+
+                total_value = position_summary['total_value']
+                est_gain = position_summary['estimated_gain']
+                est_gain_pct = position_summary['estimated_gain_pct']
+                act_gain = position_summary['actual_gain']
+                act_gain_pct = position_summary['actual_gain_pct']
+                settled_value = position_summary.get('settled_value', 0)
+
+                est_color = '\033[1;31m' if est_gain >= 0 else '\033[1;32m'
+                act_color = '\033[1;31m' if act_gain >= 0 else '\033[1;32m'
+                est_sign = '+' if est_gain >= 0 else ''
+                act_sign = '+' if act_gain >= 0 else ''
+
+                if settled_value > 0:
+                    actual_gain_str = f"{act_color}{act_sign}¥{act_gain:,.2f} ({act_sign}{act_gain_pct:.2f}%)\033[0m"
+                else:
+                    actual_gain_str = "\033[1;90m净值未更新\033[0m"
+
+                summary_table = [
+                    ["总持仓金额", f"¥{total_value:,.2f}"],
+                    ["今日预估涨跌", f"{est_color}{est_sign}¥{est_gain:,.2f} ({est_sign}{est_gain_pct:.2f}%)\033[0m"],
+                    ["今日实际涨跌", actual_gain_str],
+                ]
+
+                for line_msg in format_table_msg(summary_table).split("\n"):
+                    logger.info(line_msg)
+
+                if 'fund_details' in position_summary and position_summary['fund_details']:
+                    logger.critical(f"{time.strftime('%Y-%m-%d %H:%M')} 分基金涨跌明细:")
+
+                    table_data = []
+                    for detail in position_summary['fund_details']:
+                        est_color = '\033[1;31m' if detail['estimated_gain'] >= 0 else '\033[1;32m'
+                        act_color = '\033[1;31m' if detail['actual_gain'] >= 0 else '\033[1;32m'
+                        est_sign = '+' if detail['estimated_gain'] >= 0 else ''
+                        act_sign = '+' if detail['actual_gain'] >= 0 else ''
+
+                        table_data.append([
+                            detail['code'],
+                            detail['name'],
+                            f"{detail['shares']:,.2f}",
+                            f"¥{detail['position_value']:,.2f}",
+                            f"{est_color}{est_sign}¥{detail['estimated_gain']:,.2f}\033[0m",
+                            f"{est_color}{est_sign}{detail['estimated_gain_pct']:.2f}%\033[0m",
+                            f"{act_color}{act_sign}¥{detail['actual_gain']:,.2f}\033[0m",
+                            f"{act_color}{act_sign}{detail['actual_gain_pct']:.2f}%\033[0m",
+                        ])
+
+                    for line_msg in format_table_msg([
+                        ["基金代码", "基金名称", "持仓份额", "持仓市值", "预估收益", "预估涨跌", "实际收益",
+                         "实际涨跌"],
+                        *table_data
+                    ]).split("\n"):
+                        logger.info(line_msg)
+
+            cli_result = [[row[0], row[1], row[2], row[4], row[5], row[6], row[7]] for row in self.result]
             logger.critical(f"{time.strftime('%Y-%m-%d %H:%M')} 基金估值信息:")
             for line_msg in format_table_msg([
                 [
-                    "基金代码", "基金名称", "估值时间", "估值", "日涨幅", "连涨/跌", "近30天"
+                    "基金代码", "基金名称", "时间", "估值", "日涨幅", "连涨/跌", "近30天"
                 ],
-                *self.result
+                *cli_result
             ]).split("\n"):
                 logger.info(line_msg)
+
+    def calculate_position_summary(self):
+        """计算持仓统计信息
+
+        Returns:
+            dict: 持仓统计数据，如果没有持仓则返回None
+        """
+        total_value = 0
+        estimated_gain = 0
+        actual_gain = 0
+        settled_value = 0
+        today = datetime.datetime.now().strftime("%Y-%m-%d")
+
+        now = datetime.datetime.now()
+        current_hour = now.hour
+        current_minute = now.minute
+        before_market_open = current_hour < 9 or (current_hour == 9 and current_minute < 30)
+
+        fund_details = []
+
+        for fund_data in self.result:
+            shares = self.CACHE_MAP.get(fund_data[0], {}).get('shares', 0)
+            if shares <= 0:
+                continue
+
+            try:
+                fund_code = fund_data[0]
+                fund_name = fund_data[1]
+
+                net_value_str = fund_data[3]
+                net_value = float(net_value_str.split('(')[0])
+                net_value_date = net_value_str.split('(')[1].replace(')', '')
+
+                if len(net_value_date) == 5:
+                    current_year = datetime.datetime.now().year
+                    net_value_date = f"{current_year}-{net_value_date}"
+
+                estimated_growth_str = fund_data[4]
+                if estimated_growth_str != "N/A":
+                    estimated_growth_str = estimated_growth_str.replace('\033[1;31m', '').replace('\033[1;32m',
+                                                                                                  '').replace('%', '')
+                    estimated_growth = float(estimated_growth_str)
+                else:
+                    estimated_growth = 0
+
+                day_growth_str = fund_data[5]
+                if day_growth_str != "N/A":
+                    day_growth_str = day_growth_str.replace('\033[1;31m', '').replace('\033[1;32m', '').replace('%', '')
+                    day_growth = float(day_growth_str)
+                else:
+                    day_growth = 0
+
+                position_value = shares * net_value
+                total_value += position_value
+
+                fund_est_gain = position_value * estimated_growth / 100
+                estimated_gain += fund_est_gain
+
+                fund_act_gain = 0
+                if net_value_date == today:
+                    fund_act_gain = position_value * day_growth / 100
+                    actual_gain += fund_act_gain
+                    settled_value += position_value
+
+                fund_details.append({
+                    'code': fund_code,
+                    'name': fund_name,
+                    'shares': shares,
+                    'position_value': position_value,
+                    'estimated_gain': fund_est_gain,
+                    'estimated_gain_pct': (fund_est_gain / position_value * 100) if position_value > 0 else 0,
+                    'actual_gain': fund_act_gain,
+                    'actual_gain_pct': (fund_act_gain / position_value * 100) if position_value > 0 else 0,
+                })
+
+            except (ValueError, IndexError, AttributeError) as e:
+                logger.warning(f"解析基金数据失败: {fund_data[0]}, {e}")
+                continue
+
+        if total_value == 0:
+            return None
+
+        return {
+            'total_value': total_value,
+            'estimated_gain': estimated_gain,
+            'estimated_gain_pct': (estimated_gain / total_value * 100) if total_value > 0 else 0,
+            'actual_gain': actual_gain,
+            'actual_gain_pct': (actual_gain / settled_value * 100) if settled_value > 0 else 0,
+            'settled_value': settled_value,
+            'fund_details': fund_details
+        }
+
+    def modify_shares(self):
+        """CLI交互式修改基金持仓份额"""
+        now_codes = list(self.CACHE_MAP.keys())
+        if not now_codes:
+            logger.warning("暂无基金代码，请先添加基金")
+            return
+
+        logger.info("当前基金列表:")
+        for code, data in self.CACHE_MAP.items():
+            shares = data.get('shares', 0)
+            logger.info(f"  {code} - {data['fund_name']} (当前份额: {shares})")
+
+        logger.info("\n请输入基金代码, 多个基金代码以英文逗号分隔:")
+        codes = input()
+        codes = codes.split(",")
+        codes = [code.strip() for code in codes if code.strip()]
+
+        for code in codes:
+            try:
+                if code not in self.CACHE_MAP:
+                    logger.warning(f"修改份额【{code}】失败: 不存在该基金代码, 请先添加该基金代码")
+                    continue
+
+                fund_name = self.CACHE_MAP[code]['fund_name']
+                current_shares = self.CACHE_MAP[code].get('shares', 0)
+
+                logger.info(f"\n基金 【{code} {fund_name}】")
+                logger.info(f"当前份额: {current_shares}")
+                logger.info("请输入新的份额数量 (输入0表示清空):")
+                shares_input = input().strip()
+
+                if shares_input:
+                    try:
+                        shares = float(shares_input)
+                        if shares < 0:
+                            logger.warning("份额不能为负数")
+                            continue
+
+                        self.CACHE_MAP[code]['shares'] = shares
+
+                        if shares > 0:
+                            self.CACHE_MAP[code]['is_hold'] = True
+
+                        logger.info(f"✓ 已更新份额: {shares}")
+                    except ValueError:
+                        logger.warning("份额格式错误，请输入数字")
+                        continue
+                else:
+                    logger.info("未输入份额，跳过")
+
+            except Exception as e:
+                logger.error(f"修改份额【{code}】失败: {e}")
+
+        self.save_cache()
+        logger.info("\n份额修改完成")
 
     def fund_html(self):
         result = self.search_code(True)
         return get_table_html(
             [
-                "基金代码", "基金名称", "估值时间", "估值", "日涨幅", "连涨/跌", "近30天"
+                "基金代码", "基金名称", "当前时间", "净值", "估值", "日涨幅", "连涨/跌", "近30天"
             ],
             result,
-            sortable_columns=[3, 4, 5, 6]
+            sortable_columns=[4, 5, 6, 7]
         )
 
     @staticmethod
@@ -660,7 +1155,6 @@ class MaYiFund:
         }
         bk_list = list(bk_map.keys())
 
-        # 如果是返回模式且没有指定板块ID,返回板块列表
         if is_return and bk_id is None:
             return {"bk_map": bk_map, "bk_list": bk_list}
 
@@ -683,9 +1177,7 @@ class MaYiFund:
                 logger.error("输入有误, 请重新输入要查询的板块序号:")
                 bk_id = input()
 
-        # 如果是返回模式,直接使用传入的bk_id
         if is_return and bk_id not in id_map:
-            # 如果传入的是板块名称而不是ID,尝试查找
             if bk_id in bk_map:
                 bk_code = bk_map[bk_id]
             else:
@@ -734,7 +1226,8 @@ class MaYiFund:
                 (data_list[1] or "---"),
                 (data_list[3] or "---"),
                 (data_list[15] or "---"),
-                (data_list[16] or "---") + "（" + (data_list[17] or "---") + "%）",
+                (data_list[16] or "---"),  # 净值
+                (data_list[17] or "---") + "%",  # 日增长率
                 (data_list[5] or "---") + "%",
                 (data_list[6] or "---") + "%",
                 (data_list[7] or "---") + "%",
@@ -764,23 +1257,25 @@ class MaYiFund:
             logger.info(line_msg)
 
     def run(self, is_add=False, is_delete=False, is_hold=False, is_not_hold=False, report_dir=None,
-            deep_mode=False, fast_mode=False, with_ai=False, select_mode=False, mark_sector=False, unmark_sector=False):
+            deep_mode=False, fast_mode=False, with_ai=False, select_mode=False, mark_sector=False, unmark_sector=False,
+            modify_shares=False):
 
         if select_mode:
             self.select_fund()
             return
 
-        # 处理标记板块功能
+        if modify_shares:
+            self.modify_shares()
+            return
+
         if mark_sector:
             self.mark_fund_sector()
             return
 
-        # 处理删除标记板块功能
         if unmark_sector:
             self.unmark_fund_sector()
             return
 
-        # 存储报告目录到实例属性（None 表示不保存报告文件）
         self.report_dir = report_dir
 
         if not self.CACHE_MAP:
@@ -880,7 +1375,6 @@ class MaYiFund:
                             ratio
                         ])
 
-            # 增加创业板指
             url = "https://finance.pae.baidu.com/vapi/v1/getquotation"
             params = {
                 "srcid": "5353",
@@ -929,6 +1423,94 @@ class MaYiFund:
             result,
         )
 
+    def get_market_chart_data(self):
+        """返回全球指数图表数据（用于前端Chart.js）"""
+        result = self.get_market_info(True)
+        labels = [item[0] for item in result] if result else []
+        prices = []
+        changes = []
+        for item in result:
+            try:
+                price = float(item[1]) if item[1] else 0
+                change_str = item[2] if item[2] else "0%"
+                change_str = change_str.replace('%', '').replace('\033[1;31m', '').replace('\033[1;32m', '')
+                change = float(change_str)
+            except:
+                price = 0
+                change = 0
+            prices.append(price)
+            changes.append(change)
+        return {
+            'labels': labels,
+            'prices': prices,
+            'changes': changes
+        }
+
+    def get_volume_chart_data(self):
+        """返回成交量趋势图表数据（用于前端Chart.js）"""
+        result = self.seven_A(True)
+        labels = []
+        total_data = []
+        ss_data = []
+        sz_data = []
+        bj_data = []
+        for item in result:
+            try:
+                labels.append(item[0])
+                total = float(item[1].replace('亿', '')) if item[1] else 0
+                ss = float(item[2].replace('亿', '')) if item[2] else 0
+                sz = float(item[3].replace('亿', '')) if item[3] else 0
+                bj = float(item[4].replace('亿', '')) if item[4] else 0
+                total_data.append(total)
+                ss_data.append(ss)
+                sz_data.append(sz)
+                bj_data.append(bj)
+            except:
+                continue
+        return {
+            'labels': labels[::-1],  # 反转顺序，让日期从早到晚
+            'total': total_data[::-1],
+            'sh': ss_data[::-1],
+            'sz': sz_data[::-1],
+            'bj': bj_data[::-1]
+        }
+
+    def get_timing_chart_data(self):
+        """返回上证分时图表数据（用于前端Chart.js）"""
+        result = self.A(True)
+        labels = []
+        prices = []
+        change_pcts = []
+        change_amounts = []
+        volumes = []
+        amounts = []
+        for item in result:
+            try:
+                labels.append(item[0])
+                price = float(item[1]) if item[1] else 0
+                pct_str = item[3].replace('%', '') if len(item) > 3 and item[3] else '0'
+                pct = float(pct_str)
+                change_amt = float(item[2]) if len(item) > 2 and item[2] else 0
+                vol_str = item[4].replace('万手', '').replace(',', '') if len(item) > 4 and item[4] else '0'
+                volume = float(vol_str)
+                amt_str = item[5].replace('亿', '').replace(',', '') if len(item) > 5 and item[5] else '0'
+                amount = float(amt_str)
+                prices.append(price)
+                change_pcts.append(pct)
+                change_amounts.append(change_amt)
+                volumes.append(volume)
+                amounts.append(amount)
+            except:
+                continue
+        return {
+            'labels': labels,
+            'prices': prices,
+            'change_pcts': change_pcts,
+            'change_amounts': change_amounts,
+            'volumes': volumes,
+            'amounts': amounts
+        }
+
     def gold_html(self):
         result = self.gold(True)
         if result:
@@ -952,7 +1534,7 @@ class MaYiFund:
                 "fltt": "2",
                 "invt": "2",
                 "ut": "8dec03ba335b81bf4ebdf7b29ec27d15",
-                "fs": "m:90 t:2",
+                "fs": "m:90 t:3",
                 "fields": "f12,f14,f2,f3,f62,f184,f66,f69,f72,f75,f78,f81,f84,f87,f204,f205,f124,f1,f13"
             }
             response = requests.get(url, params=params, timeout=10, verify=False)
@@ -980,6 +1562,7 @@ class MaYiFund:
                         else:
                             add_market_cap2 = "\033[1;31m" + add_market_cap2
                     bk_result.append([
+                        bk["f12"],
                         bk["f14"],
                         ratio,
                         add_market_cap,
@@ -992,26 +1575,28 @@ class MaYiFund:
 
         bk_result = sorted(
             bk_result,
-            key=lambda x: float(x[1].split("m")[-1].replace("%", "")) if x[3] != "N/A" else -99,
+            key=lambda x: float(x[2].split("m")[-1].replace("%", "")) if x[4] != "N/A" else -99,
             reverse=True
         )
         if is_return:
             return bk_result
         if bk_result:
-            logger.critical(f"{time.strftime('%Y-%m-%d %H:%M')} 行业板块:")
+            cli_result = [[row[1], row[2], row[3], row[4], row[5], row[6]] for row in bk_result]
+            logger.critical(f"{time.strftime('%Y-%m-%d %H:%M')} 概念板块:")
             for line_msg in format_table_msg([
                 [
                     "板块名称", "今日涨跌幅", "今日主力净流入", "今日主力净流入占比", "今日小单净流入", "今日小单流入占比"
                 ],
-                *bk_result
+                *cli_result
             ]).split("\n"):
                 logger.info(line_msg)
 
     def bk_html(self):
         result = self.bk(True)
+        html_result = [[row[1], row[2], row[3], row[4], row[5], row[6]] for row in result]
         return get_table_html(
             ["板块名称", "今日涨跌幅", "今日主力净流入", "今日主力净流入占比", "今日小单净流入", "今日小单流入占比"],
-            result,
+            html_result,
             sortable_columns=[1, 2, 3, 4, 5]
         )
 
@@ -1049,8 +1634,6 @@ class MaYiFund:
 
     def kx_html(self):
         result = self.kx(True)
-        # 将 result 转换为表格格式
-        # kx 返回的是一个 list of dicts，我们需要将其转换为 list of lists
         table_data = []
         for v in result:
             evaluate = v.get("evaluate", "")
@@ -1058,7 +1641,6 @@ class MaYiFund:
             publish_time = v["publish_time"]
             publish_time = datetime.datetime.fromtimestamp(int(publish_time)).strftime("%H:%M:%S")
 
-            # 格式化评价，添加颜色
             if evaluate == "利好":
                 evaluate = f'<span class="positive">{evaluate}</span>'
             elif evaluate == "利空":
@@ -1245,6 +1827,53 @@ class MaYiFund:
                 result
             )
 
+    def one_day_gold_html(self):
+        """分时黄金价格HTML - 返回原始数据用于图表展示"""
+        result = self.one_day_gold()
+        if result:
+            import json
+            return json.dumps(result)
+        return None
+
+    @staticmethod
+    def one_day_gold():
+        headers = {
+            "accept": "*/*",
+            "accept-language": "zh-CN,zh;q=0.9",
+            "referer": "https://quote.cngold.org/gjs/gjhj.html",
+            "sec-ch-ua": "\"Not;A=Brand\";v=\"99\", \"Google Chrome\";v=\"139\", \"Chromium\";v=\"139\"",
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": "\"Windows\"",
+            "sec-fetch-dest": "script",
+            "sec-fetch-mode": "no-cors",
+            "sec-fetch-site": "cross-site",
+            "sec-fetch-storage-access": "active",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36"
+        }
+        try:
+            url = "https://api.jijinhao.com/sQuoteCenter/todayMin.htm"
+            params = {
+                "code": "JO_92233",
+                "isCalc": True
+            }
+            response = requests.get(url, headers=headers, params=params, timeout=10, verify=False)
+            data = json.loads(response.text.replace("var hq_str_ml = ", ""))
+            result = []
+            data = data["data"]
+            data = [x for x in data if x["price"] != -1]
+            for i in data:
+                date = i["date"]
+                date = datetime.datetime.fromtimestamp(date / 1000).strftime("%Y-%m-%d %H:%M:%S")
+                price = round(float(i["price"]), 2)
+                result.append({
+                    "date": date,
+                    "price": price
+                })
+            return result
+        except Exception as e:
+            logger.error(f"获取今日贵金价走势失败: {e}")
+            return None
+
     def A(self, is_return=False):
         url = "https://finance.pae.baidu.com/vapi/v1/getquotation"
         params = {
@@ -1266,7 +1895,7 @@ class MaYiFund:
                 if not is_return:
                     marketData = marketData.split(";")[-30:]
                 else:
-                    marketData = marketData.split(";")[-15:]
+                    marketData = marketData.split(";")
                 marketData = [x.split(",")[1:] for x in marketData]
                 if marketData:
                     result = []
@@ -1318,7 +1947,6 @@ class MaYiFund:
             if str(response.json()["ResultCode"]) == "0":
                 trend = response.json()["Result"]["trend"]
                 result = []
-                # 近七天的日期
                 today = datetime.datetime.now()
                 dates = [(today - datetime.timedelta(days=i)).strftime("%Y-%m-%d") for i in range(8)]
                 for i in dates:
@@ -1365,18 +1993,14 @@ class MaYiFund:
     def select_fund_html(self, bk_id=None):
         """生成板块基金查询的HTML"""
         if bk_id is None:
-            # 返回板块选择界面
             data = self.select_fund(is_return=True)
             bk_list = data["bk_list"]
 
-            # 使用类属性的大板块分类
             major_categories = self.MAJOR_CATEGORIES
 
-            # 生成分类板块按钮
             buttons_html = '<div style="padding: 20px;">'
             for category, sectors in major_categories.items():
-                # 过滤出属于当前大类的板块
-                category_sectors = [(idx+1, name) for idx, name in enumerate(bk_list) if name in sectors]
+                category_sectors = [(idx + 1, name) for idx, name in enumerate(bk_list) if name in sectors]
                 if not category_sectors:
                     continue
 
@@ -1424,7 +2048,6 @@ class MaYiFund:
             </script>
             '''
         else:
-            # 返回指定板块的基金列表
             data = self.select_fund(bk_id=bk_id, is_return=True)
             if "error" in data:
                 return f'<p style="color: red; padding: 20px;">{data["error"]}</p>'
@@ -1433,10 +2056,10 @@ class MaYiFund:
             <div style="padding: 20px;">
                 <h3 style="margin: 0 0 15px 0;">板块: {data["bk_name"]}</h3>
                 {get_table_html(
-                    ["基金代码", "基金名称", "基金类型", "日期", "净值|日增长率", "近1周", "近1月", "近3月", "近6月", "今年来", "近1年", "近2年", "近3年", "成立来"],
-                    data["results"],
-                    [4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
-                )}
+                ["基金代码", "基金名称", "基金类型", "日期", "净值", "日增长率", "近1周", "近1月", "近3月", "近6月", "今年来", "近1年", "近2年", "近3年", "成立来"],
+                data["results"],
+                [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+            )}
             </div>
             '''
 
@@ -1457,7 +2080,7 @@ class MaYiFund:
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='MaYiFund')
+    parser = argparse.ArgumentParser(description='LanFund')
     parser.add_argument('-a', '--add', action='store_true', help='添加基金代码')
     parser.add_argument("-d", "--delete", action="store_true", help="删除基金代码")
     parser.add_argument("-c", "--hold", action="store_true", help="添加持有基金标注")
@@ -1465,14 +2088,21 @@ if __name__ == '__main__':
     parser.add_argument("-e", "--mark_sector", action="store_true", help="标记板块")
     parser.add_argument("-u", "--unmark_sector", action="store_true", help="删除标记板块")
     parser.add_argument("-s", "--select", action="store_true", help="选择板块查看基金列表")
+    parser.add_argument("-m", "--modify-shares", action="store_true", help="修改基金持仓份额")
     parser.add_argument("-o", "--output", type=str, nargs='?', const="reports", default=None,
                         help="输出AI分析报告到指定目录（默认: reports）。只有使用此参数时才会保存报告文件")
     parser.add_argument("-f", "--fast", action="store_true", help="启用快速分析模式")
     parser.add_argument("-D", "--deep", action="store_true", help="启用深度研究模式")
     parser.add_argument("-W", "--with-ai", action="store_true", help="AI分析")
+    parser.add_argument('--init', action='store_true', help='初始化服务器连接配置')
     args = parser.parse_args()
 
-    mayi_fund = MaYiFund()
-    # 只有指定了 -o 参数时才传入 report_dir，否则传入 None 表示不保存报告
+    if args.init:
+        success = ClientConfig.init_interactive()
+        sys.exit(0 if success else 1)
+
+    lan_fund = LanFund()
     report_dir = args.output if args.output is not None else None
-    mayi_fund.run(args.add, args.delete, args.hold, args.not_hold, report_dir, args.deep, args.fast, args.with_ai, args.select, args.mark_sector, args.unmark_sector)
+    lan_fund.run(args.add, args.delete, args.hold, args.not_hold, report_dir, args.deep, args.fast, args.with_ai,
+                 args.select, args.mark_sector, args.unmark_sector, args.modify_shares)
+

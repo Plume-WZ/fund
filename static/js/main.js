@@ -1621,3 +1621,151 @@
         });
 
     });
+
+    // ===== 全局模拟数据 =====
+    window.fundData = {
+        "000001": {
+            nav: 1.5234
+        }
+    };
+
+    window.fundSharesData = {
+        "000001": 1000
+    };
+
+    let currentSharesFundCode = null;
+
+
+    // ===== 弹窗控制 =====
+    function openSharesModal(code) {
+        currentSharesFundCode = code;
+        document.getElementById("sharesModalFundCode").innerText = code;
+        document.getElementById("sharesModal").style.display = "flex";
+        calculateTradePreview();
+    }
+
+    function closeSharesModal() {
+        document.getElementById("sharesModal").style.display = "none";
+    }
+
+
+    // ===== 获取净值 =====
+    function getCurrentNav(code) {
+        if (window.fundData[code]) {
+            return parseFloat(window.fundData[code].nav);
+        }
+        return 1;
+    }
+
+
+    // ===== 实时计算 =====
+    function calculateTradePreview() {
+
+        if (!currentSharesFundCode) return;
+
+        const nav = getCurrentNav(currentSharesFundCode);
+        const feeRate = parseFloat(
+            document.getElementById("feeRate").value || 0
+        ) / 100;
+
+        const type = document.getElementById("tradeType").value;
+
+        if (type === "buy") {
+            const amount = parseFloat(
+                document.getElementById("buyAmount").value || 0
+            );
+
+            const realAmount = amount * (1 - feeRate);
+            const shares = nav > 0 ? realAmount / nav : 0;
+
+            document.getElementById("buyResult").innerText =
+                shares.toFixed(2);
+        }
+
+        if (type === "sell") {
+            const shares = parseFloat(
+                document.getElementById("sellShares").value || 0
+            );
+
+            const amount = shares * nav * (1 - feeRate);
+
+            document.getElementById("sellResult").innerText =
+                amount.toFixed(2);
+        }
+    }
+
+
+    // ===== 监听输入 =====
+    document.addEventListener("DOMContentLoaded", function () {
+
+        document.getElementById("tradeType")
+            .addEventListener("change", function () {
+
+                const type = this.value;
+
+                document.getElementById("buyBlock").style.display =
+                    type === "buy" ? "block" : "none";
+
+                document.getElementById("sellBlock").style.display =
+                    type === "sell" ? "block" : "none";
+
+                calculateTradePreview();
+            });
+
+        ["buyAmount", "sellShares", "feeRate"].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) {
+                el.addEventListener("input", calculateTradePreview);
+            }
+        });
+    });
+
+
+    // ===== 确认交易 =====
+    async function confirmTrade() {
+
+        if (!currentSharesFundCode) {
+            alert("未选择基金");
+            return;
+        }
+
+        const nav = getCurrentNav(currentSharesFundCode);
+        const feeRate = parseFloat(
+            document.getElementById("feeRate").value || 0
+        ) / 100;
+
+        const type = document.getElementById("tradeType").value;
+
+        let deltaShares = 0;
+
+        if (type === "buy") {
+            const amount = parseFloat(
+                document.getElementById("buyAmount").value || 0
+            );
+
+            deltaShares = (amount * (1 - feeRate)) / nav;
+        }
+
+        if (type === "sell") {
+            deltaShares = -parseFloat(
+                document.getElementById("sellShares").value || 0
+            );
+        }
+
+        const currentShares =
+            window.fundSharesData[currentSharesFundCode] || 0;
+
+        const newShares = currentShares + deltaShares;
+
+        if (newShares < 0) {
+            alert("卖出份额超过当前持仓");
+            return;
+        }
+
+        // 模拟后端保存
+        window.fundSharesData[currentSharesFundCode] = newShares;
+
+        alert("交易成功！当前持仓份额：" + newShares.toFixed(2));
+
+        closeSharesModal();
+    }

@@ -3735,3 +3735,125 @@ def get_sectors_page_html(sectors_content, select_fund_content, fund_map, userna
         lyrics_script=get_lyrics_carousel_script()
     )
     return html
+
+
+def render_main_page():
+    return """
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>基金持仓系统</title>
+    <style>
+        body { font-family: Arial; background:#f5f6fa; }
+        .btn { padding:8px 16px; border:none; border-radius:6px; cursor:pointer; }
+        .btn-primary { background:#2563eb; color:white; }
+        .btn-secondary { background:#999; color:white; }
+
+        .sector-modal {
+            display:none;
+            position:fixed;
+            left:0; top:0;
+            width:100%; height:100%;
+            background:rgba(0,0,0,0.5);
+            justify-content:center;
+            align-items:center;
+        }
+
+        .sector-modal-content {
+            background:white;
+            border-radius:10px;
+            width:420px;
+            overflow:hidden;
+        }
+
+        .sector-modal-header {
+            background:#2563eb;
+            color:white;
+            padding:12px;
+            font-size:16px;
+        }
+
+        .sector-modal-footer {
+            padding:12px;
+            text-align:right;
+            background:#f1f5f9;
+        }
+
+        input, select {
+            width:100%;
+            padding:8px;
+            margin-top:6px;
+            border:1px solid #ccc;
+            border-radius:6px;
+        }
+    </style>
+</head>
+
+<body>
+
+<h2>基金持仓管理</h2>
+
+<button class="btn btn-primary" onclick="openSharesModal('000001')">
+    修改基金持仓
+</button>
+
+<!-- 买卖操作弹窗 -->
+<div class="sector-modal" id="sharesModal">
+    <div class="sector-modal-content">
+        <div class="sector-modal-header">基金交易</div>
+
+        <div style="padding:20px;">
+
+            <div style="margin-bottom:15px;">
+                <label>基金代码</label>
+                <div id="sharesModalFundCode"
+                     style="padding:8px;background:#eef;border-radius:6px;">
+                </div>
+            </div>
+
+            <div style="margin-bottom:15px;">
+                <label>交易类型</label>
+                <select id="tradeType">
+                    <option value="buy">买入</option>
+                    <option value="sell">卖出</option>
+                </select>
+            </div>
+
+            <div id="buyBlock" style="margin-bottom:15px;">
+                <label>买入金额</label>
+                <input type="number" id="buyAmount" step="0.01" min="0">
+                <div style="margin-top:8px;color:#16a34a;">
+                    本次可得份额：
+                    <span id="buyResult">0</span>
+                </div>
+            </div>
+
+            <div id="sellBlock" style="display:none;margin-bottom:15px;">
+                <label>卖出份额</label>
+                <input type="number" id="sellShares" step="0.01" min="0">
+                <div style="margin-top:8px;color:#dc2626;">
+                    卖出到账金额：
+                    <span id="sellResult">0</span>
+                </div>
+            </div>
+
+            <div style="margin-bottom:15px;">
+                <label>手续费率(%)</label>
+                <input type="number" id="feeRate" step="0.01" min="0" value="0.15">
+            </div>
+
+        </div>
+
+        <div class="sector-modal-footer">
+            <button class="btn btn-secondary" onclick="closeSharesModal()">取消</button>
+            <button class="btn btn-primary" onclick="confirmTrade()">确定</button>
+        </div>
+    </div>
+</div>
+
+<script src="/static/main.js"></script>
+
+</body>
+</html>
+"""
